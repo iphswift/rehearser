@@ -1,0 +1,62 @@
+version: '0.1'
+
+services:
+  flask-app:
+    build: .
+    command: flask run --host=0.0.0.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+      - ./processed:/app/processed
+    environment:
+      - FLASK_APP=app.app
+      - FLASK_ENV=development
+    depends_on:
+      - redis
+    networks:
+      - app-network
+
+  frontend:
+    image: node:14-alpine
+    working_dir: /frontend
+    volumes:
+      - ./frontend:/frontend
+    command: ["npx", "http-server", "-p", "8000"]
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    ports:
+      - "8070:8070"
+    networks:
+      - app-network
+
+  celery-worker:
+    build: .
+    
+    command: celery -A app.app.celery worker --loglevel=info --concurrency=1
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+      - ./processed:/app/processed
+    depends_on:
+      - redis
+    networks:
+      - app-network
+
+  redis:
+    image: redis:6.2
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+  

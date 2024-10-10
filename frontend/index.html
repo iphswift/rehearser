@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload PDF</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        table, th, td {
+            border: 1px solid black;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Upload PDF File</h1>
+    <form id="uploadForm">
+        <input type="file" id="fileInput" name="file">
+        <button type="submit">Upload</button>
+    </form>
+    <div id="message"></div>
+
+    <h2>Previously Uploaded Papers</h2>
+    <div id="papersContainer">
+        <table id="papersTable">
+            <thead>
+                <tr>
+                    <th>Filename</th>
+                    <th>Uploaded At</th>
+                    <th>Status</th> <!-- Added status column header -->
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Dynamic rows will be added here -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // Function to handle paper uploads
+        document.getElementById('uploadForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                document.getElementById('message').innerText = 'No file selected.';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Upload the paper
+            fetch('http://localhost:5000/papers', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    document.getElementById('message').innerText = 'File uploaded successfully.';
+                    loadPapers();  // Refresh the list of papers after upload
+                } else {
+                    document.getElementById('message').innerText = data.message;
+                    document.getElementById('message').style.color = 'red';
+                }
+            })
+            .catch(error => {
+                document.getElementById('message').innerText = 'Error: ' + error.message;
+                document.getElementById('message').style.color = 'red';
+            });
+        });
+
+        // Example of rendering the paper list with status
+        // Load papers from the backend
+        function loadPapers() {
+            fetch('http://localhost:5000/papers')
+                .then(response => response.json())
+                .then(data => {
+                    const papersTableBody = document.querySelector('#papersTable tbody');
+                    papersTableBody.innerHTML = ''; // Clear existing rows
+
+                    data.data.forEach(paper => {
+                        const row = document.createElement('tr');
+
+                        const filenameCell = document.createElement('td');
+                        filenameCell.textContent = paper.filename;
+                        row.appendChild(filenameCell);
+
+                        const createdAtCell = document.createElement('td');
+                        createdAtCell.textContent = new Date(paper.created_at).toLocaleString();
+                        row.appendChild(createdAtCell);
+
+                        const statusCell = document.createElement('td');
+                        statusCell.textContent = paper.status;
+                        row.appendChild(statusCell);
+
+                        const actionsCell = document.createElement('td');
+                        
+                        // Conditionally show buttons based on the paper's status
+                        if (paper.status === 'completed') {
+                            // Show all action buttons for completed papers
+                            const viewButton = document.createElement('button');
+                            viewButton.textContent = 'View';
+                            viewButton.addEventListener('click', function() {
+                            // Redirect to the audio sync page
+                            fetch(`http://localhost:5000/papers/${paper.id}/audio`)
+                                .then(response => response.json())
+                                .then(audioData => {
+                                    if (audioData.error) {
+                                        alert(audioData.error);
+                                    } else {
+                                        // Redirect to the audio synchronization page, passing audio and alignment files
+                                        window.location.href = `audio_sync.html?audio_file=${encodeURIComponent(audioData.audio_file)}&speech_marks_file=${encodeURIComponent(audioData.speech_marks_file)}`;
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('Error fetching audio data:', error);
+                                });
+                            });
+                            actionsCell.appendChild(viewButton);
+
+                            const downloadButton = document.createElement('button');
+                            downloadButton.textContent = 'Download';
+                            downloadButton.addEventListener('click', function() {
+                                // Fetch the narrational text file and trigger the download
+                                fetch(`http://localhost:5000/papers/${paper.id}/narrational_text`)
+                                    .then(response => response.json())
+                                    .then(data => {
+                                        if (data.status === 'success') {
+                                            // Create a temporary anchor element to trigger the download
+                                            const link = document.createElement('a');
+                                            link.href = `http://localhost:5000${data.data.narrational_text_file}`;
+                                            link.download = '';  // Let the browser decide the filename
+                                            document.body.appendChild(link);
+                                            link.click();  // Trigger the download
+                                            document.body.removeChild(link);  // Clean up the element
+                                        } else {
+                                            alert(data.message);
+                                        }
+                                    })
+                                    .catch(error => {
+                                        console.error('Error downloading narrational text:', error);
+                                    });
+                            });
+                            actionsCell.appendChild(downloadButton);
+                            const deleteButton = document.createElement('button');
+                            deleteButton.textContent = 'Delete';
+                            deleteButton.addEventListener('click', function() {
+                                const confirmDelete = confirm(`Are you sure you want to delete the paper "${paper.filename}"?`);
+                                if (confirmDelete) {
+                                    deletePaper(paper.id);  // Call the delete function if confirmed
+                                }
+                            });
+                            actionsCell.appendChild(deleteButton);
+                        } else if (paper.status === 'error') {
+                            // Show delete button for papers with errors
+                            const deleteButton = document.createElement('button');
+                            deleteButton.textContent = 'Delete';
+                            deleteButton.addEventListener('click', function() {
+                                const confirmDelete = confirm(`Are you sure you want to delete the paper "${paper.filename}"?`);
+                                if (confirmDelete) {
+                                    deletePaper(paper.id);  // Call the delete function if confirmed
+                                }
+                            });
+                            actionsCell.appendChild(deleteButton);
+
+                        } else if (paper.status === 'processing') {
+                            // Show nothing for papers that are still processing
+                            actionsCell.textContent = '';  // No buttons for processing
+                        }
+
+                        row.appendChild(actionsCell);
+                        papersTableBody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching papers:', error);
+                });
+        }
+        // Function to delete a paper by ID
+        function deletePaper(paperId) {
+            fetch(`http://localhost:5000/papers/${paperId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(data.message);  // Show success message
+                    loadPapers();  // Reload the list of papers after deletion
+                } else {
+                    alert(data.message);  // Show error message
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting the paper:', error);
+            });
+        }
+        // Polling function to check for paper updates every 10 seconds
+        setInterval(loadPapers, 10000);  // Poll every 10 seconds
+        // Load papers when the page is loaded
+        document.addEventListener('DOMContentLoaded', loadPapers);
+    </script>
+</body>
+</html>

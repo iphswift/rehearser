@@ -1,0 +1,11 @@
+# Ignore Python cache files
+app/__pycache__/
+
+# Ignore processed folder
+processed/
+
+# Ignore uploads folder
+uploads/
+
+# Ignore the papers database
+papers.db

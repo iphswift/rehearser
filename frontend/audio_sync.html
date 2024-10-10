@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Synchronization</title>
+    <style>
+        #text-display {
+            width: 100%;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            margin-top: 20px;
+            padding: 10px;
+            font-size: 1.5em;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .highlight {
+            background-color: yellow;
+        }
+        #controls {
+            display: flex;
+            align-items: center;
+            margin-top: 20px;
+        }
+        #playback-rate {
+            margin-top: 20px;
+        }
+        .skip-button {
+            font-size: 1.5em;
+            margin: 0 10px;
+            cursor: pointer;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/mediaelement/4.2.16/mediaelementplayer.min.css" />
+</head>
+<body>
+    <div id="controls">
+        <button id="skip-backward" class="skip-button">⏪ 5s</button>
+        <audio id="audio" controls>
+            Your browser does not support the audio element.
+        </audio>
+        <button id="skip-forward" class="skip-button">⏩ 5s</button>
+    </div>
+    <div id="text-display"></div>
+    <label for="playback-rate">Playback Speed:</label>
+    <select id="playback-rate">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="1.5">1.5x</option>
+        <option value="2">2x</option>
+    </select>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mediaelement/4.2.16/mediaelement-and-player.min.js"></script>
+    <script src="synchronize.js"></script>
+</body>
+</html>
