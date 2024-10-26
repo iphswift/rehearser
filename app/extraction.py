@@ -16,7 +16,8 @@ def extract_text_from_pdf(pdf_file_path, xml_output_path):
         else:
             print(f"Failed to process the PDF. Status code: {response.status_code}")
             return None
-
+        
+# Gets body text divs from Grobid XML.
 def extract_body_text(grobid_output):
     print("Extracting body text...")
     soup = BeautifulSoup(grobid_output, 'xml')
@@ -26,11 +27,8 @@ def extract_body_text(grobid_output):
 
     if body:
         for div in body.find_all('div'):
-            if div.get('type') in ['figure', 'table', 'reference'] or 'table' in div.get('type', ''):
-                continue
             for element in div.find_all(['p', 'head']):
-                if element.name == 'head':
-                    continue
+                # Skip reference divs.
                 for ref in element.find_all('ref', {'type': 'bibr'}):
                     ref.decompose()
                 text = decompose_ligatures_in_string(element.get_text())
@@ -53,6 +51,8 @@ def decompose_ligatures_in_string(input_string):
 
     return input_string
 
+# Removes text that are believed to be tables, figures, etc. based on simple regex.
+# This is a naive approach and may not work for all cases.
 def filter_non_expository(texts):
     print("Removing non-expository text...")
 
@@ -73,6 +73,8 @@ def is_header_for_table_or_figure(text):
             return True
     return False
 
+
+# Extracts narrational text from a PDF file using Grobid
 def get_narrational_text(pdf_file_path, base_name, output_dir, xml_output_path):
     narrational_text_path = os.path.join(output_dir, f"{base_name}_narrational_text.txt")
     
