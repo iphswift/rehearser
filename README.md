@@ -2,6 +2,8 @@
 
 Rehearser is an application for aiding in the reading of research papers.
 
+![Image of UI](ui.png)
+
 ## Usage
 
 To use the application, the only requirement is [Docker](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/).
