@@ -15,6 +15,7 @@ function preprocessWordTimesExact(fragments) {
 }
 
 function initializeSynchronization(speechMarksFile) {
+    const serverAddress = localStorage.getItem('serverAddress') || 'http://localhost:5000';
     const audioElement = document.getElementById('audio');
     const textDisplay = document.getElementById('text-display');
     const playbackRateSelector = document.getElementById('playback-rate');
@@ -32,7 +33,7 @@ function initializeSynchronization(speechMarksFile) {
     let lookupTable = [];
     let currentFragmentIndex = 0;
 
-    fetch(speechMarksFile)
+    fetch(`${serverAddress}${speechMarksFile}`)
         .then(response => response.json())
         .then(data => {
             lookupTable = preprocessWordTimesExact(data.fragments);  // Using modified function for Gentle
@@ -114,6 +115,7 @@ function initializeSynchronization(speechMarksFile) {
 
 // Initialize synchronization when the document is ready
 document.addEventListener('DOMContentLoaded', function() {
+    const serverAddress = localStorage.getItem('serverAddress') || 'http://localhost:5000';
     const urlParams = new URLSearchParams(window.location.search);
     const audioFile = urlParams.get('audio_file');
     const speechMarksFile = urlParams.get('speech_marks_file');
@@ -121,11 +123,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (audioFile && speechMarksFile) {
         const audioElement = document.getElementById('audio');
         const audioSource = document.createElement('source');
-        audioSource.src = `http://127.0.0.1:5000${audioFile}`;
+        audioSource.src = `${serverAddress}${audioFile}`;
         audioSource.type = 'audio/ogg';
         audioElement.appendChild(audioSource);
 
-        initializeSynchronization(`http://127.0.0.1:5000${speechMarksFile}`);
+        initializeSynchronization(`${speechMarksFile}`);
     } else {
         console.error('Audio or speech marks file not provided.');
     }
