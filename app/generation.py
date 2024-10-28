@@ -13,6 +13,7 @@ import logging
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Necessary preload for ESPNet g2p conversion
 cmu = cmudict.dict()
 
 tts_model = None  # Global variable for the TTS model in each process
