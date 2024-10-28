@@ -4,6 +4,8 @@ Rehearser is an application for aiding in the reading of research papers.
 
 ![Image of UI](ui.png)
 
+(Image includes text from the "Demo Paper" [1])
+
 ## Usage
 
 To use the application, the only requirement is [Docker](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/).
@@ -41,3 +43,9 @@ This tool is still in early iterations. Please exercise caution with use.
 1. The parsing may end up missing text (eg, a few lines at the top of a page) or adding undesired text (eg, such as the contents of a figure).
 
 2. Citations are currently missing from the extracted text and audio.
+
+## Citation
+
+The "demo paper" used in this project is:
+
+[1] Meuschke, Norman, et al. "A benchmark of pdf information extraction tools using a multi-task and multi-domain evaluation framework for academic documents." International Conference on Information. Cham: Springer Nature Switzerland, 2023.
