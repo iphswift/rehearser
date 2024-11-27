@@ -5,12 +5,14 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - .:/app
-      - ./uploads:/app/uploads
-      - ./processed:/app/processed
+      - .:/backend
+      - ./uploads:/backend/uploads
+      - ./processed:/backend/processed
     environment:
-      - FLASK_APP=app.app
+      - FLASK_APP=backend.app
       - FLASK_ENV=development
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
       - redis
     networks:
@@ -37,15 +39,32 @@ services:
   celery-worker:
     build: .
     
-    command: celery -A app.app.celery worker --loglevel=info --concurrency=1
+    command: celery -A backend.app.celery worker --loglevel=info --concurrency=1
     volumes:
-      - .:/app
-      - ./uploads:/app/uploads
-      - ./processed:/app/processed
+      - .:/backend
+      - ./uploads:/backend/uploads
+      - ./processed:/backend/processed
     depends_on:
       - redis
     networks:
       - app-network
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  celery-beat:
+    build: .
+
+    command: celery -A backend.app.celery beat --loglevel=info
+    volumes:
+      - .:/backend
+    depends_on:
+      - redis
+    networks:
+      - app-network
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
 
   redis:
     image: redis:6.2

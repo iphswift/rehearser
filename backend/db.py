@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime, timedelta
-from app.config import Config
+from backend.config import Config
 
 def save_paper_info(filename, status):
     """Save the paper metadata to the database with an initial status."""
@@ -44,13 +44,12 @@ def update_paper_status(paper_id, status):
                         (status, paper_id))
         conn.commit()
 
-def mark_unfinished_jobs_as_error():
-    """Mark papers that were 'processing' when the app exited as 'error'."""
+def get_stuck_jobs():
+    """Retrieve stuck jobs in 'processing' state."""
     with sqlite3.connect(Config.DATABASE) as conn:
         cursor = conn.cursor()
-        one_day_ago = datetime.now() - timedelta(hours=6)
-        cursor.execute('UPDATE papers SET status = "error" WHERE status = "processing" AND created_at < ?', (one_day_ago.strftime('%Y-%m-%d %H:%M:%S'),))
-        conn.commit()
+        cursor.execute("SELECT id FROM papers WHERE status = 'processing'")
+        return cursor.fetchall()
 
 def init_db():
     with sqlite3.connect(Config.DATABASE) as conn:

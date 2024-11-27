@@ -9,53 +9,25 @@ from flask_cors import CORS
 import sqlite3
 from werkzeug.utils import secure_filename
 import traceback
-from app.db import save_paper_info, is_file_already_processing_or_processed, mark_unfinished_jobs_as_error, init_db, save_audio_info, update_paper_status
-from app.extraction import get_narrational_text
-from app.generation import text_to_speech_fastspeech
-from app.celery_worker import make_celery
-from app.config import Config
+from backend.db import save_paper_info, is_file_already_processing_or_processed, init_db, save_audio_info, update_paper_status
+from backend.extraction import get_narrational_text
+from backend.generation import text_to_speech_fastspeech
+from backend.celery_worker import make_celery
+from backend.config import Config
 
 app = Flask(__name__)
 CORS(app)
 
 #Load config from app.config
 app.config.from_object(Config)
+app.config['broker_url'] = 'redis://redis:6379/0'  #celery demands lowercase
+app.config['result_backend'] = 'redis://redis:6379/0'
 
 # Ensure the necessary folders exis[pt
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)
 
 celery = make_celery(app)
-
-#####Tasks#####
-
-@celery.task(name='app.process_file')
-def process_file(file_path, paper_id):
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_dir = app.config['PROCESSED_FOLDER']
-    xml_output_path = os.path.join(output_dir, f"{base_name}.xml")
-
-    try:
-        # Extract narrational text from PDF
-        narrational_text = get_narrational_text(file_path, base_name, output_dir, xml_output_path)
-
-        # Use FastSpeech2 to generate speech and perform alignment
-        audio_file, combined_alignment_file = text_to_speech_fastspeech(narrational_text, output_dir, base_name)
-
-        # Update the status to 'completed'
-        update_paper_status(paper_id, 'completed')
-
-        # Save audio and alignment information to the database
-        save_audio_info(paper_id, audio_file, combined_alignment_file)
-
-    except Exception as e:
-        # Update the status to 'error'
-        print(f"Processing failed for paper {paper_id}: {str(e)}")
-        traceback.print_exc()
-        update_paper_status(paper_id, 'error')
-
-
-#####Routes#####
 
 @app.route('/papers', methods=['POST'])
 def upload_paper():
@@ -221,4 +193,3 @@ def delete_paper(paper_id):
 @app.before_first_request
 def initialize():
     init_db()
-    mark_unfinished_jobs_as_error()

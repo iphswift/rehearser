@@ -14,3 +14,4 @@ scipy==1.7.3
 nltk==3.6.3
 celery==5.2.0
 redis==3.5.3
+g2p_en==2.1.0

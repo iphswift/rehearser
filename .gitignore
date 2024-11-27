@@ -1,5 +1,5 @@
 # Ignore Python cache files
-app/__pycache__/
+backend/__pycache__/
 
 # Ignore processed folder
 processed/
@@ -9,3 +9,5 @@ uploads/
 
 # Ignore the papers database
 papers.db
+
+celerybeat-schedule
