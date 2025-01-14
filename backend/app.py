@@ -4,16 +4,15 @@ import logging
 #enable logging
 logging.basicConfig(level=logging.DEBUG)
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, make_response, send_from_directory
 from flask_cors import CORS
 import sqlite3
 from werkzeug.utils import secure_filename
 import traceback
-from backend.db import save_paper_info, is_file_already_processing_or_processed, init_db, save_audio_info, update_paper_status
-from backend.extraction import get_narrational_text
-from backend.generation import text_to_speech_fastspeech
+from backend.db import save_paper_info, is_file_already_processing_or_processed, init_db
 from backend.celery_worker import make_celery
 from backend.config import Config
+from backend.tasks import process_file
 
 app = Flask(__name__)
 CORS(app)
@@ -144,7 +143,37 @@ def get_paper_narrational_text_url(paper_id):
             return jsonify({'status': 'error', 'message': 'Narrational text file not found'}), 404
     else:
         return jsonify({'status': 'error', 'message': 'Paper not found'}), 404
-    
+
+@app.route('/papers/<int:paper_id>/pdf', methods=['GET'])
+def get_paper_pdf(paper_id):
+    """Expose the uploaded PDF file for download by its paper ID."""
+    # Retrieve paper metadata from the database
+    with sqlite3.connect(app.config['DATABASE']) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT filename FROM papers WHERE id = ?', (paper_id,))
+        paper = cursor.fetchone()
+
+    if paper:
+        filename = paper[0]
+        
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+        if not os.path.exists(file_path):
+            return jsonify({'status': 'error', 'message': 'File not found on server'}), 404
+
+        with open(file_path, 'rb') as f:
+            pdf_data = f.read()
+
+        response = make_response(pdf_data)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'inline; filename="{}"'.format(filename)
+        return response
+
+
+    else:
+        return jsonify({'status': 'error', 'message': 'Paper not found'}), 404
+
+
 @app.route('/papers/<int:paper_id>', methods=['DELETE'])
 def delete_paper(paper_id):
     """Delete a paper and all associated files from the database and filesystem."""

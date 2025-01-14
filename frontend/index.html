@@ -193,7 +193,7 @@
                                         alert(audioData.error);
                                     } else {
                                         // Redirect to the audio synchronization page, passing audio and alignment files
-                                        window.location.href = `audio_sync.html?audio_file=${encodeURIComponent(audioData.audio_file)}&speech_marks_file=${encodeURIComponent(audioData.speech_marks_file)}`;
+                                        window.location.href = `audio_sync.html?audio_file=${encodeURIComponent(audioData.audio_file)}&speech_marks_file=${encodeURIComponent(audioData.speech_marks_file)}&paper_id=${paper.id}`;
                                     }
                                 })
                                 .catch(error => {
