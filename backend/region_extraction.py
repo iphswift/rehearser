@@ -1,19 +1,25 @@
-import unittest
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 import json
-import sys
 import re
 import pdfplumber  # Ensure you have pdfplumber installed: pip install pdfplumber
+import os
 import logging
+
+# Determine the directory where the log file should be placed
+log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pdf_segmentation.log')
+log_dir = os.path.dirname(log_file)
+
+# Create the directory if it doesn't exist
+os.makedirs(log_dir, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
-    filename='pdf_segmentation.log',  # Log file path
-    filemode='w',                      # Overwrite the log file each run
-    level=logging.WARNING,               # Log level (DEBUG captures all levels)
-    format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
+    filename=log_file,
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
 
 @dataclass
 class TextSegment:
@@ -214,7 +220,7 @@ def extract_connected_regions_from_pdf(
 
             for page_num, page in enumerate(pdf.pages, start=1):
                 logging.info(f"Processing Page {page_num}")
-                words = page.extract_words(use_text_flow=True, keep_blank_chars=False)
+                words = page.extract_words(use_text_flow=False, keep_blank_chars=True, x_tolerance=1)
                 if not words:
                     logging.warning(f"No words found on Page {page_num}.")
                     all_pages_data.append(PageData(
@@ -495,11 +501,16 @@ def combine_bounding_boxes(bounding_boxes: List[Tuple[float, float, float, float
     return (x0, top, x1, bottom)
 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Tuple, Optional
+import logging
+
 def match_text_to_regions_with_splitting(
     text_chunks: List[str],
     pages_data: List[PageData],
     segment_id_to_info: Dict[int, Tuple[int, Tuple[float, float, float, float]]],
-    segment_id_to_component_id: Dict[int, int]
+    segment_id_to_component_id: Dict[int, int],
+    max_workers: Optional[int] = None  # Optional parameter to specify number of threads
 ) -> List[dict]:
     """
     Matches text chunks to PDF regions with splitting based on connected components,
@@ -509,17 +520,20 @@ def match_text_to_regions_with_splitting(
     :param pages_data: List of PageData objects containing PDF segmentation information.
     :param segment_id_to_info: Dictionary mapping unique segment_id to (page_number, bounding_box).
     :param segment_id_to_component_id: Dictionary mapping unique segment_id to component_id.
+    :param max_workers: Maximum number of threads to use. Defaults to number of processors on the machine.
     :return: List of dictionaries describing each matched narrational text block with page and combined bounding box info.
     """
     logging.info("Starting match_text_to_regions_with_splitting process.")
+    
     # 1) Sort the PDF segments by connected component and reading order
     component_sorted_segments = sort_segments(pages_data)
     logging.debug(f"Sorted segments into {len(component_sorted_segments)} connected components.")
 
-    results = []
+    # Initialize a dictionary to hold results with chunk indices
+    indexed_results = {}
 
-    # 2) For each original text chunk, use match_chunk_sequentially to find the best matching sequence of segments
-    for chunk_index, text_chunk in enumerate(text_chunks):
+    # Define a helper function for processing a single text_chunk
+    def process_chunk(chunk_index: int, text_chunk: str) -> List[dict]:
         logging.info(f"Processing text_chunk {chunk_index}: '{text_chunk}'")
         
         # Use match_chunk_sequentially to find the best sequence of segments for this chunk
@@ -544,13 +558,14 @@ def match_text_to_regions_with_splitting(
                         page_numbers.add(page_num)
                     if bbox:
                         bounding_boxes.append(bbox)
-                page_num = list(page_numbers)[0] if len(page_numbers) == 1 else list(page_numbers)
+                page_num = list(page_numbers)[0] if len(page_numbers) == 1 else list(page_numbers)             
                 combined_bbox = combine_bounding_boxes(bounding_boxes)  # Combine bounding boxes
-                results.append({
+                result = {
                     'narrational_text_block': text_chunk,
                     'page_number': page_num,
                     'bounding_box': combined_bbox  # Store combined bounding box
-                })
+                }
+                return [result]  # Return as a list for consistency
             else:
                 # Multiple component match, split by component
                 sub_chunks = split_chunk_by_components_if_needed(
@@ -558,12 +573,12 @@ def match_text_to_regions_with_splitting(
                     best_segments,
                     {seg.id: segment_id_to_component_id[seg.id] for seg in best_segments}
                 )
+                result = []
                 for sub_chunk in sub_chunks:
                     # Extract relevant information from each sub_chunk
                     sub_text = sub_chunk['sub_chunk']
                     component_id = sub_chunk['component_id']
-                    matched_indices = sub_chunk['matched_indices']
-                    
+
                     # Identify which segments correspond to this component_id
                     related_segments = [seg for seg in best_segments if segment_id_to_component_id[seg.id] == component_id]
                     seg_ids = [seg.id for seg in related_segments]
@@ -581,21 +596,56 @@ def match_text_to_regions_with_splitting(
                     combined_bbox = combine_bounding_boxes(bounding_boxes)
                     
                     # Append the sub_chunk as a regular chunk in the results
-                    results.append({
+                    result.append({
                         'narrational_text_block': sub_text,
                         'page_number': page_num,
                         'bounding_box': combined_bbox
                     })
+                return result  # Return as a list
         else:
             # No strong match found, we leave it unmatched
-            results.append({
+            result = {
                 'narrational_text_block': text_chunk,
                 'page_number': None,
                 'bounding_box': (0.0, 0.0, 0.0, 0.0)  # Default bounding box for unmatched
-            })
+            }
+            return [result]  # Return as a list for consistency
+
+    # 2) Use ThreadPoolExecutor to process text_chunks in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks and map futures to their chunk indices
+        future_to_index = {
+            executor.submit(process_chunk, idx, chunk): idx 
+            for idx, chunk in enumerate(text_chunks)
+        }
+        
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            try:
+                data = future.result()
+                indexed_results[idx] = data  # Store the list of results for this chunk
+            except Exception as exc:
+                logging.error(f"Text chunk {idx} generated an exception: {exc}", exc_info=True)
+                # Assign a default unmatched entry
+                indexed_results[idx] = [{
+                    'narrational_text_block': text_chunks[idx],
+                    'page_number': None,
+                    'bounding_box': (0.0, 0.0, 0.0, 0.0)
+                }]
+
+    # 3) Assemble the final results in the original order
+    final_results = []
+    for idx in range(len(text_chunks)):
+        chunk_results = indexed_results.get(idx, [{
+            'narrational_text_block': text_chunks[idx],
+            'page_number': None,
+            'bounding_box': (0.0, 0.0, 0.0, 0.0)
+        }])
+        final_results.extend(chunk_results)
 
     logging.info("Completed match_text_to_regions_with_splitting process.")
-    return results
+    return final_results
+
 
 def split_text(text, max_length=222):
     logging.info(f"Splitting text into chunks with max_length={max_length}")
@@ -743,10 +793,53 @@ def split_chunk_by_components_if_needed(
     logging.info(f"split_chunk_by_components_if_needed result: {result}")
     return result
 
+def bound_to_nearest_valid(chunks):
+    """
+    Updates entries in `chunks` where `page_number` is None by assigning them the `page_number`
+    and `bounding_box` of the nearest valid entry (either previous or next).
+
+    :param chunks: List of dictionaries, each containing at least `page_number` and `bounding_box` keys.
+    :return: Updated list of dictionaries.
+    """
+    # First pass: fill with the previous valid entry
+    last_valid_page_number = None
+    last_valid_bounding_box = None
+
+    for entry in chunks:
+        if entry['page_number'] is None:
+            # Use the last valid page_number and bounding_box if available
+            if last_valid_page_number is not None and last_valid_bounding_box is not None:
+                entry['page_number'] = last_valid_page_number
+                entry['bounding_box'] = last_valid_bounding_box
+        else:
+            # Update the last valid values
+            last_valid_page_number = entry['page_number']
+            last_valid_bounding_box = entry['bounding_box']
+
+    # Second pass: fill with the next valid entry if still None
+    next_valid_page_number = None
+    next_valid_bounding_box = None
+
+    for entry in reversed(chunks):
+        if entry['page_number'] is None:
+            # Use the next valid page_number and bounding_box if available
+            if next_valid_page_number is not None and next_valid_bounding_box is not None:
+                entry['page_number'] = next_valid_page_number
+                entry['bounding_box'] = next_valid_bounding_box
+        else:
+            # Update the next valid values
+            next_valid_page_number = entry['page_number']
+            next_valid_bounding_box = entry['bounding_box']
+
+    return chunks
+
+    
+
 def segment_pdf_with_narrational_text(
     pdf_path: str,
     narrational_text: str,
-    output_file: Optional[str] = None  # Optional parameter for output file path
+    output_file: Optional[str] = None,  # Optional parameter for output file path
+    max_workers: Optional[int] = None
 ) -> List[dict]:
     """
     ... [existing docstring] ...
@@ -775,7 +868,8 @@ def segment_pdf_with_narrational_text(
         text_chunks, 
         pages_data, 
         segment_id_to_info,
-        segment_id_to_component_id
+        segment_id_to_component_id,
+        max_workers=max_workers
     )
     logging.info(f"Matched text chunks to PDF regions. Total matches: {len(result)}")
 
@@ -789,4 +883,7 @@ def segment_pdf_with_narrational_text(
             logging.error(f"Failed to write results to {output_file}: {e}")
 
     logging.info("Completed PDF segmentation with narrational text matching.")
+    
+    result = bound_to_nearest_valid(result)
+    
     return result
