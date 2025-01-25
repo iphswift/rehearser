@@ -37,7 +37,7 @@ def process_file(file_path, paper_id):
         split_text = segment_pdf_with_narrational_text(file_path, narrational_text, output_file=segmentation_path, max_workers=10)
 
         # Use FastSpeech2 to generate speech and perform alignment
-        audio_file, combined_alignment_file = text_to_speech_fastspeech(split_text, output_dir, base_name)
+        audio_file, combined_alignment_file = text_to_speech_fastspeech(split_text, output_dir, base_name, max_workers=1)
 
         # Update the status to 'completed'
         update_paper_status(paper_id, 'completed')

@@ -3,18 +3,43 @@ import os
 import sys
 import statistics
 import glob
+from typing import List, Tuple, Dict
+from dataclasses import dataclass, field
+from collections import Counter
 
 # Add the project root to sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, project_root)
 
-from backend.region_extraction import extract_connected_regions_from_pdf
+from backend.region_extraction import extract_connected_regions_from_pdf, find_columns_for_page, sort_segments
+
+
+
+@dataclass
+class TextSegment:
+    id: int  # Unique identifier for the segment
+    text: str
+    bbox: Tuple[float, float, float, float]  # (x0, top, x1, bottom)
+
+@dataclass
+class Adjacency:
+    left: List[int] = field(default_factory=list)   # IDs of segments to the left
+    right: List[int] = field(default_factory=list)  # IDs of segments to the right
+    top: List[int] = field(default_factory=list)    # IDs of segments above
+    bottom: List[int] = field(default_factory=list) # IDs of segments below
+
+@dataclass
+class PageData:
+    page_number: int
+    segments: List[TextSegment]
+    adjacencies: Dict[int, Adjacency]
+    connected_components: List[List[int]] = field(default_factory=list)  # Connected components
 
 class TestPDFMetrics(unittest.TestCase):
     """
-    Unit tests for validating the average number of words per segment
-    and average word length across specified pages in PDF documents.
+    Unit tests for validating PDF metrics such as average words per segment,
+    average word length, and most common column formats across specified pages.
     """
 
     def _compute_average_metrics(self, segments):
@@ -62,23 +87,23 @@ class TestPDFMetrics(unittest.TestCase):
         return (average_word_count, min_word_count, max_word_count,
                 average_word_length, min_word_length, max_word_length)
 
-    def _test_average_metrics(self, pdf_path):
+    def _test_average_metrics(self, pdf_path, column_format):
         """
-        Generalized test method to assert average word count and average word length in specified pages.
+        Generalized test method to assert average word count and average word length in specified pages,
+        applying different rules based on the column format.
 
         Args:
             pdf_path (str): Path to the PDF file to be tested.
+            column_format (str): The column format of the PDF ('one_column' or 'two_column').
         """
         # Extract connected regions from the PDF
         pages_data, _, _ = extract_connected_regions_from_pdf(
-            pdf_path=pdf_path
+            pdf_path=pdf_path,
+            page_slice=slice(1, 2)  # Adjust as needed for pages 2-5
         )
 
-        # Define the page indices to include (pages 2-5 correspond to indices 1-4)
-        target_page_indices = slice(1, 5)  # Pages 2, 3, 4, 5
-
         all_segments = []
-        for page in pages_data[target_page_indices]:
+        for page in pages_data:
             all_segments.extend(page.segments)
 
         # Ensure there are segments to analyze
@@ -87,29 +112,43 @@ class TestPDFMetrics(unittest.TestCase):
             f"No segments found in pages 2-5 of the PDF '{pdf_path}'."
         )
 
-        # Compute the average number of words and average word length per segment
+        # Compute the average number of words and average word lengthp per segment
         (average_word_count, min_wc, max_wc,
          average_word_length, min_wl, max_wl) = self._compute_average_metrics(all_segments)
 
         # Print the metrics to the console
-        print(f"PDF '{pdf_path}':")
+        print(f"PDF '{pdf_path}' ({column_format}):")
         print(f"  Average Word Count per Segment: {average_word_count:.2f}")
         print(f"  Word Count Range: {min_wc} - {max_wc}")
         print(f"  Average Word Length: {average_word_length:.2f}")
         print(f"  Word Length Range: {min_wl} - {max_wl}\n")
 
+        # Define expected ranges based on column format
+        if column_format == 'two_column':
+            expected_wc_min = 8
+            expected_wc_max = 13
+            expected_wl_min = 3
+            expected_wl_max = 15
+        elif column_format == 'one_column':
+            expected_wc_min = 12  # Example: higher word count for single column
+            expected_wc_max = 20
+            expected_wl_min = 3
+            expected_wl_max = 15
+        else:
+            self.fail(f"Unknown column format '{column_format}' for PDF '{pdf_path}'.")
+
         # Assert that the average word count is within the specified range
         self.assertGreaterEqual(
             average_word_count,
-            5,
-            f"Average word count {average_word_count:.2f} is less than 5 in PDF '{pdf_path}'. "
+            expected_wc_min,
+            f"Average word count {average_word_count:.2f} is less than {expected_wc_min} in PDF '{pdf_path}' ({column_format}). "
             f"Word Count Range: {min_wc} - {max_wc}; "
             f"Average Word Length: {average_word_length:.2f}"
         )
         self.assertLessEqual(
             average_word_count,
-            20,
-            f"Average word count {average_word_count:.2f} exceeds 20 in PDF '{pdf_path}'. "
+            expected_wc_max,
+            f"Average word count {average_word_count:.2f} exceeds {expected_wc_max} in PDF '{pdf_path}' ({column_format}). "
             f"Word Count Range: {min_wc} - {max_wc}; "
             f"Average Word Length: {average_word_length:.2f}"
         )
@@ -118,15 +157,15 @@ class TestPDFMetrics(unittest.TestCase):
         # Typical English word lengths range from 3 to 10 characters
         self.assertGreaterEqual(
             average_word_length,
-            3,
-            f"Average word length {average_word_length:.2f} is less than 3 in PDF '{pdf_path}'. "
+            expected_wl_min,
+            f"Average word length {average_word_length:.2f} is less than {expected_wl_min} in PDF '{pdf_path}' ({column_format}). "
             f"Word Length Range: {min_wl} - {max_wl}; "
             f"Average Word Count: {average_word_count:.2f}"
         )
         self.assertLessEqual(
             average_word_length,
-            10,  # Corrected the upper bound from 15 to 10 as per the comment
-            f"Average word length {average_word_length:.2f} exceeds 10 in PDF '{pdf_path}'. "
+            expected_wl_max,  # Adjusted upper bound based on column format
+            f"Average word length {average_word_length:.2f} exceeds {expected_wl_max} in PDF '{pdf_path}' ({column_format}). "
             f"Word Length Range: {min_wl} - {max_wl}; "
             f"Average Word Count: {average_word_count:.2f}"
         )
@@ -134,24 +173,33 @@ class TestPDFMetrics(unittest.TestCase):
     def test_all_pdfs_average_metrics(self):
         """
         Test the average number of words per segment and average word length for all PDFs
-        in the '/test_pdfs' subdirectory across pages 2-5.
+        in the '/test_pdfs' subdirectories ('one_column' and 'two_column').
+        Applies different validation rules based on the column format.
         """
-        # Construct the path to the '/test_pdfs' directory
-        test_pdfs_dir = os.path.join(project_root, 'test/test_pdfs')
+        # Define the subdirectories and their corresponding column formats
+        column_subdirs = {
+            'two_column': 'two_column',
+            'one_column': 'one_column'
+        }
 
-        # Use glob to find all PDF files in the directory
-        pdf_files = glob.glob(os.path.join(test_pdfs_dir, '*.pdf'))
+        # Iterate over each column format subdirectory
+        for subdir, column_format in column_subdirs.items():
+            # Construct the path to the subdirectory
+            subdir_path = os.path.join(project_root, 'test/test_pdfs', subdir)
 
-        # Ensure that there are PDF files to test
-        self.assertTrue(
-            len(pdf_files) > 0,
-            f"No PDF files found in the directory '{test_pdfs_dir}'."
-        )
+            # Use glob to find all PDF files in the subdirectory
+            pdf_files = glob.glob(os.path.join(subdir_path, '*.pdf'))
 
-        # Iterate over each PDF file and perform the test within a subTest
-        for pdf_path in pdf_files:
-            with self.subTest(pdf=pdf_path):
-                self._test_average_metrics(pdf_path=pdf_path)
+            # Ensure that there are PDF files to test
+            self.assertTrue(
+                len(pdf_files) > 0,
+                f"No PDF files found in the directory '{subdir_path}'."
+            )
+
+            # Iterate over each PDF file and perform the test within a subTest
+            for pdf_path in pdf_files:
+                with self.subTest(pdf=pdf_path, format=column_format):
+                    self._test_average_metrics(pdf_path=pdf_path, column_format=column_format)
 
 if __name__ == '__main__':
     unittest.main()

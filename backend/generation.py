@@ -95,7 +95,7 @@ def process_chunk(chunk: Dict[str, Any], output_dir: str, base_name: str, index:
         logging.error(f"Error processing chunk {index}: {e}")
         raise
 
-def text_to_speech_fastspeech(chunks: List[Dict[str, Any]], output_dir: str, base_name: str, max_workers: int = 4) -> Tuple[str, str]:
+def text_to_speech_fastspeech(chunks: List[Dict[str, Any]], output_dir: str, base_name: str, max_workers: int = 1) -> Tuple[str, str]:
     """
     Convert text to speech using FastSpeech2 with parallel chunk processing.
     Includes bounding box information in the alignment.

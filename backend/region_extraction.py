@@ -5,6 +5,9 @@ import re
 import pdfplumber  # Ensure you have pdfplumber installed: pip install pdfplumber
 import os
 import logging
+from rtree import index
+import statistics
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Determine the directory where the log file should be placed
 log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pdf_segmentation.log')
@@ -16,7 +19,7 @@ os.makedirs(log_dir, exist_ok=True)
 # Configure logging
 logging.basicConfig(
     filename=log_file,
-    level=logging.DEBUG,
+    level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
@@ -154,6 +157,59 @@ def find_adjacencies(segments: List[TextSegment], proximity: float = 5.0) -> Dic
 
     return adjacencies
 
+def find_adjacencies_optimized(
+    segments: List[TextSegment],
+    proximity: float = 5.0
+) -> Dict[int, Adjacency]:
+    """
+    Find adjacencies among segments. Only consider segments adjacent if:
+      1) They are in the same column (based on segment_to_column).
+      2) Their bounding boxes are within proximity in the respective direction.
+    """
+    adjacencies = {segment.id: Adjacency() for segment in segments}
+
+    # Build R-tree index for bounding boxes
+    idx = index.Index()
+    for seg in segments:
+        idx.insert(seg.id, seg.bbox)
+
+    # Create a dictionary for quick ID-to-segment mapping
+    id_to_segment = {segment.id: segment for segment in segments}
+
+    for seg_a in segments:
+        a_x0, a_top, a_x1, a_bottom = seg_a.bbox
+
+        # Define search window based on proximity
+        search_window = (a_x0 - proximity, a_top - proximity, a_x1 + proximity, a_bottom + proximity)
+        
+        # Query R-tree for potential adjacent segments
+        potential_adjacent = list(idx.intersection(search_window))
+
+        for seg_b_id in potential_adjacent:
+            if seg_a.id == seg_b_id:
+                continue  # Skip self
+
+            seg_b = id_to_segment[seg_b_id]
+            b_x0, b_top, b_x1, b_bottom = seg_b.bbox
+
+            # Check left adjacency
+            if is_close(a_x0, b_x1, proximity) and (a_top < b_bottom and a_bottom > b_top):
+                adjacencies[seg_a.id].left.append(seg_b.id)
+
+            # Check right adjacency
+            if is_close(a_x1, b_x0, proximity) and (a_top < b_bottom and a_bottom > b_top):
+                adjacencies[seg_a.id].right.append(seg_b.id)
+
+            # Check top adjacency
+            if is_close(a_top, b_bottom, proximity) and (a_x0 < b_x1 and a_x1 > b_x0):
+                adjacencies[seg_a.id].top.append(seg_b.id)
+
+            # Check bottom adjacency
+            if is_close(a_bottom, b_top, proximity) and (a_x0 < b_x1 and a_x1 > b_x0):
+                adjacencies[seg_a.id].bottom.append(seg_b.id)
+
+    return adjacencies
+
 
 def find_connected_components(adjacencies: Dict[int, Adjacency]) -> List[List[int]]:
     """
@@ -185,42 +241,104 @@ def find_connected_components(adjacencies: Dict[int, Adjacency]) -> List[List[in
 
     return connected_components
 
+def cluster_line_words_outlier_based(
+    line_words: List[Dict],
+    outlier_factor: float = 2.0,
+    mad_floor: float = .5
+
+) -> List[List[Dict]]:
+    """
+    Clusters words on a single line by detecting outlier gaps
+    based on the median and Median Absolute Deviation (pMAD).
+
+    :param line_words: List of word dicts (from pdfplumber) for a single line.
+    :param outlier_factor: Multiplier for the MAD. Larger => fewer gaps labeled outliers.
+    :return: A list of segments (clusters).
+    """    
+    if not line_words:
+        return []
+
+    # 1) Sort words by their left (x0) coordinate
+    sorted_words = sorted(line_words, key=lambda w: w['x0'])
+    
+    # 2) Compute consecutive gaps
+    gaps = []
+    for i in range(1, len(sorted_words)):
+        prev_word = sorted_words[i - 1]
+        current_word = sorted_words[i]
+        gap = current_word['x0'] - prev_word['x1']
+        gaps.append(gap)
+    
+    # If only one word or no gaps, it forms a single cluster
+    if not gaps:
+        return [sorted_words]
+
+    # 3) Find median gap and compute MAD
+    median_gap = statistics.median(gaps)
+    abs_devs = [abs(g - median_gap) for g in gaps]
+    mad = statistics.median(abs_devs) if abs_devs else 0.0
+    
+    # 4) Identify outlier gap threshold
+    if mad < mad_floor:
+        # Fallback if all gaps are identical or near-identical
+        threshold = median_gap + mad_floor * outlier_factor
+    else:
+        threshold = median_gap + outlier_factor * mad
+    
+    # 5) Perform clustering based on outlier gaps
+    segments = []
+    current_segment = [sorted_words[0]]
+    for i in range(1, len(sorted_words)):
+        gap = gaps[i - 1]
+        #print(f"  Checking gap {i}: {gap} against threshold {threshold}")
+        if gap > threshold:
+            #print(f"    Gap {gap} is greater than threshold. Starting new segment.")
+            segments.append(current_segment)
+            current_segment = [sorted_words[i]]
+        else:
+            #print(f"    Gap {gap} is within threshold. Adding to current segment.")
+            current_segment.append(sorted_words[i])
+
+    # Add the last segment
+    segments.append(current_segment)
+    for idx, segment in enumerate(segments):
+        words_in_segment = [word.get('text', '') for word in segment]
+
+    return segments
+
 
 def extract_connected_regions_from_pdf(
     pdf_path: str,
-    gap_threshold_ratio: float = 1.5,
+    outlier_factor: float = 2.0,
     y_tolerance: float = 2.0,
-    proximity: float = 5.0
+    proximity: float = 2.0,
+    mad_floor: float = 0.5,
+    page_slice: Optional[slice] = None,
 ) -> Tuple[List[PageData], Dict[int, Tuple[int, Tuple[float, float, float, float]]], Dict[int, int]]:
-    """
-       Segments a PDF into lines and columns, maps bounding boxes to their immediate neighbors,
-    and finds connected components.
 
-    Additionally, returns a mapping from unique segment ID to a tuple containing:
-    - page number
-    - bounding box
-
-    :param pdf_path: Path to the input PDF file.
-    :param gap_threshold_ratio: Ratio to determine column segmentation based on gaps.
-    :param y_tolerance: Tolerance for grouping words into the same line based on vertical position.
-    :param proximity: Proximity threshold for determining adjacency.
-    :return: 
-        - List of PageData objects containing segmentation and adjacency information.
-        - Dictionary mapping unique segment_id to (page_number, bounding_box).
-        - Dictionary mapping unique segment_id to component_id.
-    """
     logging.info(f"Opening PDF file: {pdf_path}")
     try:
         with pdfplumber.open(pdf_path) as pdf:
             all_pages_data = []
             segment_id_to_info = {}
             segment_id_to_component_id = {}
-            global_segment_id = 0  # Initialize a global segment ID
-            global_component_id = 0  # Initialize a global component ID
+            global_segment_id = 0
+            global_component_id = 0
 
-            for page_num, page in enumerate(pdf.pages, start=1):
+            # Determine the subset of pages to process
+            if page_slice is not None:
+                selected_pages = list(pdf.pages)[page_slice]
+                start = page_slice.start if page_slice.start is not None else 0
+                step = page_slice.step if page_slice.step is not None else 1
+                stop = page_slice.stop if page_slice.stop is not None else len(pdf.pages)
+                selected_page_numbers = range(start + 1, stop + 1, step)
+            else:
+                selected_pages = pdf.pages
+                selected_page_numbers = range(1, len(pdf.pages) + 1)
+
+            for page_num, page in zip(selected_page_numbers, selected_pages):
                 logging.info(f"Processing Page {page_num}")
-                words = page.extract_words(use_text_flow=False, keep_blank_chars=True, x_tolerance=1)
+                words = page.extract_words(use_text_flow=False, keep_blank_chars=False, x_tolerance=1)
                 if not words:
                     logging.warning(f"No words found on Page {page_num}.")
                     all_pages_data.append(PageData(
@@ -231,41 +349,44 @@ def extract_connected_regions_from_pdf(
                     ))
                     continue
 
+                # 1) Group words into lines
                 lines = group_words_into_lines(words, y_tolerance)
-                logging.debug(f"Page {page_num}: Grouped into {len(lines)} lines.")
+                
                 page_segments = []
-
-                for line_num, line in enumerate(lines, start=1):
-                    sorted_line = sorted(line, key=lambda w: w['x0'])
-                    segments = segment_line_into_columns(sorted_line, gap_threshold_ratio)
-                    logging.info(f"Page {page_num}, Line {line_num}: Split into {len(segments)} columns.")
+                for _, line in enumerate(lines, start=1):
+                    segments = cluster_line_words_outlier_based(
+                        line,
+                        outlier_factor=outlier_factor,
+                        mad_floor=mad_floor
+                    )
 
                     for seg in segments:
                         segment_text = ' '.join(word['text'] for word in seg)
                         bbox = calculate_bounding_box(seg)
+
                         text_segment = TextSegment(
-                            id=global_segment_id,  # Assign unique ID
+                            id=global_segment_id,
                             text=segment_text,
                             bbox=bbox
                         )
                         page_segments.append(text_segment)
-                        # Map unique segment ID to (page number, bounding box)
+
                         segment_id_to_info[global_segment_id] = (page_num, bbox)
-                        # Temporarily assign component_id as None
                         segment_id_to_component_id[global_segment_id] = None
-                        logging.info(f"Segment ID {global_segment_id}: '{segment_text}' with bbox {bbox}")
-                        global_segment_id += 1  # Increment global ID
+                        global_segment_id += 1
 
-                adjacencies = find_adjacencies(page_segments, proximity)
-                logging.debug(f"Page {page_num}: Found adjacencies for {len(adjacencies)} segments.")
+                adjacencies = find_adjacencies_optimized(
+                    page_segments,
+                    proximity=proximity
+                )
+
                 connected_components = find_connected_components(adjacencies)
-                logging.info(f"Page {page_num}: Identified {len(connected_components)} connected components.")
 
-                # Assign unique component IDs and update the mapping
+                # Assign unique component IDs for this page
                 for component in connected_components:
                     for seg_id in component:
                         segment_id_to_component_id[seg_id] = global_component_id
-                    global_component_id += 1  # Increment for next component
+                    global_component_id += 1
 
                 all_pages_data.append(PageData(
                     page_number=page_num,
@@ -278,11 +399,59 @@ def extract_connected_regions_from_pdf(
             return all_pages_data, segment_id_to_info, segment_id_to_component_id
 
     except Exception as e:
+        raise e
         logging.error(f"An error occurred while processing the PDF: {e}", exc_info=True)
         return [], {}, {}
 
+def find_columns_for_page(page, column_threshold: float = 30.0) -> Tuple[List[float], Dict[str, float]]:
+    """
+    Determine what columns exist on a single page and which column each segment belongs to.
 
-def sort_segments(pages: List[PageData]) -> List[List[TextSegment]]:
+    :param page: A PageData object containing:
+                 - page.segments: List of TextSegments, each having a 'bbox' with (left, top, right, bottom).
+                 - Possibly other attributes as needed.
+    :param column_threshold: Maximum gap (in pixels) between left positions to be considered part of the same column.
+    :return: A tuple:
+        - List of column positions (floats), each representing the average left position of that column.
+        - A dictionary mapping segment IDs to the assigned column position.
+    """
+    # Step 1: Determine column boundaries by grouping segments based on their left positions
+    left_positions = sorted(set(segment.bbox[0] for segment in page.segments))
+    columns = []
+    current_column = []
+
+    for left in left_positions:
+        if not current_column:
+            current_column.append(left)
+        elif left - current_column[-1] > column_threshold:
+            columns.append(current_column)
+            current_column = [left]
+        else:
+            current_column.append(left)
+    if current_column:
+        columns.append(current_column)
+
+    # Calculate the average left position for each column group
+    column_positions = [sum(col) / len(col) for col in columns]
+
+    # Step 2: Assign each segment to the closest column position
+    def assign_column(segment):
+        segment_left = segment.bbox[0]
+        closest_col_pos = min(column_positions, key=lambda col_pos: abs(col_pos - segment_left))
+        return closest_col_pos
+
+    segment_to_column = {
+        segment.id: assign_column(segment)
+        for segment in page.segments
+    }
+
+    return column_positions, segment_to_column
+
+from typing import List, Tuple
+# from your_module import PageData, TextSegment
+# Be sure to include the 'find_columns_for_page' function above, or import it if in a separate file.
+
+def sort_segments(pages: List['PageData']) -> List[List['TextSegment']]:
     """
     Sorts segments by connected components and reading order across all pages,
     prioritizing column-wise reading for multi-column layouts.
@@ -293,54 +462,26 @@ def sort_segments(pages: List[PageData]) -> List[List[TextSegment]]:
     sorted_components_sorted_segments = []
 
     for page in pages:
+        # Create a quick lookup for segments by ID
         id_to_segment = {segment.id: segment for segment in page.segments}
 
-        # Step 1: Determine column boundaries
-        # Extract all left positions
-        left_positions = sorted(set(segment.bbox[0] for segment in page.segments))
-        
-        # Define a threshold for column grouping (e.g., 50 pixels)
-        column_threshold = 50
-        columns = []
-        current_column = []
+        # --- Use the new function to find columns and assign segments to columns ---
+        _, segment_to_column = find_columns_for_page(page, column_threshold=30.0)
 
-        for left in left_positions:
-            if not current_column:
-                current_column.append(left)
-            elif left - current_column[-1] > column_threshold:
-                columns.append(current_column)
-                current_column = [left]
-            else:
-                current_column.append(left)
-        if current_column:
-            columns.append(current_column)
-
-        # Determine the average left position for each column
-        column_positions = [sum(col) / len(col) for col in columns]
-
-        # Step 2: Assign each segment to a column
-        def assign_column(segment: TextSegment) -> float:
-            segment_left = segment.bbox[0]
-            # Find the column with the closest left position
-            closest_column = min(column_positions, key=lambda col_left: abs(col_left - segment_left))
-            return closest_column
-
-        segment_to_column = {segment.id: assign_column(segment) for segment in page.segments}
-
-        # Step 3: Sort connected components based on their assigned columns
+        # Step 3: Sort connected components based on assigned columns
         def component_sort_key(component: List[int]) -> Tuple[float, int]:
-            # Get the minimum column position in the component
+            # Get the minimum column position among segments in this connected component
             min_column = min(segment_to_column[seg_id] for seg_id in component)
-            # Get the minimum top position in the component
+            # Get the minimum top position among segments in this connected component
             min_top = min(id_to_segment[seg_id].bbox[1] for seg_id in component)
             return (min_column, min_top)
 
+        # Sort the connected components by (column_position, top_position)
         sorted_components = sorted(page.connected_components, key=component_sort_key)
 
-        # Step 4: Sort segments within each component based on their position within the column
+        # Step 4: Within each connected component, sort segments by (top, left)
         for component in sorted_components:
             segments = [id_to_segment[seg_id] for seg_id in component]
-            # Sort primarily by top position, then by left position within the column
             segments_sorted = sorted(segments, key=lambda seg: (seg.bbox[1], seg.bbox[0]))
             sorted_components_sorted_segments.append(segments_sorted)
 
@@ -442,7 +583,7 @@ def match_chunk_sequentially(
             new_lcs = word_based_lcs(text_chunk, new_text)
             logging.debug(f"Attempting to add Segment ID {seg.id}: '{seg.text}'. New LCS count: {new_lcs}")
 
-            if new_lcs > current_lcs and new_lcs >= lcs_threshold:
+            if new_lcs >= lcs_threshold and (new_lcs > current_lcs or (new_lcs == current_lcs and len(current_segments) + 1 < len(best_segments))):
                 # improvement, so we accept this segment
                 current_segments.append(seg)
                 current_text = new_text
@@ -499,11 +640,6 @@ def combine_bounding_boxes(bounding_boxes: List[Tuple[float, float, float, float
     bottom = max(box[3] for box in bounding_boxes)
 
     return (x0, top, x1, bottom)
-
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Tuple, Optional
-import logging
 
 def match_text_to_regions_with_splitting(
     text_chunks: List[str],
@@ -833,7 +969,59 @@ def bound_to_nearest_valid(chunks):
 
     return chunks
 
-    
+
+def detect_column_count_by_words(
+    pdfplumber_page,
+    column_threshold: float = 50.0
+) -> int:
+    """
+    Heuristic function to detect how many columns appear on a single pdfplumber Page
+    by clustering individual words' x0 positions horizontally.
+
+    :param pdfplumber_page: A single page object from pdfplumber.
+    :param column_threshold: Maximum horizontal gap (in points) to consider
+                             two words as part of the same cluster/column.
+    :return: An integer representing how many columns were detected.
+    """
+
+    # 1) Extract all words from the page
+    #    (use_text_flow=False ensures minimal auto-grouping)
+    words = pdfplumber_page.extract_words(
+        use_text_flow=False,
+        keep_blank_chars=True,
+        x_tolerance=1
+    )
+    # If no words found, there are effectively 0 columns
+    if not words:
+        return 0
+
+    # 2) Gather the x0 (left) positions of all words
+    x_positions = sorted(word['x0'] for word in words)
+
+    # 3) Gap-based clustering:
+    #    - Start from the first x0
+    #    - Whenever the gap between consecutive x0's > column_threshold, start a new cluster
+    columns = []
+    current_cluster = [x_positions[0]]
+
+    for i in range(1, len(x_positions)):
+        gap = x_positions[i] - x_positions[i - 1]
+        if gap > column_threshold:
+            # The gap is large => new column cluster
+            columns.append(current_cluster)
+            current_cluster = [x_positions[i]]
+        else:
+            # Continue adding to the current cluster
+            current_cluster.append(x_positions[i])
+
+    # Don't forget the last cluster
+    if current_cluster:
+        columns.append(current_cluster)
+
+    # 4) The number of distinct clusters = number of columns
+    #    (You may optionally filter out columns that have very few words
+    #     if they're likely “outliers” or side-notes.)
+    return len(columns)
 
 def segment_pdf_with_narrational_text(
     pdf_path: str,
@@ -846,7 +1034,7 @@ def segment_pdf_with_narrational_text(
     """
     logging.info("Starting PDF segmentation with narrational text matching.")
     max_length = 222
-    gap_threshold_ratio = 1.5
+    gap_threshold_ratio = 0.5
     y_tolerance = 2.0
     proximity = 5.0
 
@@ -857,7 +1045,6 @@ def segment_pdf_with_narrational_text(
     # 2. Extract connected regions from the PDF and get the segment-to-page mapping
     pages_data, segment_id_to_info, segment_id_to_component_id = extract_connected_regions_from_pdf(
         pdf_path=pdf_path,
-        gap_threshold_ratio=gap_threshold_ratio,
         y_tolerance=y_tolerance,
         proximity=proximity
     )
